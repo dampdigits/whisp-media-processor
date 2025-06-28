@@ -114,7 +114,7 @@ class CloudflareR2Manager:
             print(f"❌ Error uploading {local_path}: {e}")
             return False
     
-    def upload_processed_files(self, video_path, audio_path=None, transcript_path=None):
+    def upload_processed_files(self, video_path, audio_path=None, transcript_paths=None):
         """Upload processed video, audio, and transcript files"""
         print(f"🌐 Uploading processed files to R2...")
         print(f"📂 Upload directory: {UPLOAD_DIR}")
@@ -135,11 +135,21 @@ class CloudflareR2Manager:
             if not self.upload_file(audio_path, audio_remote_key):
                 upload_success = False
         
-        # Upload transcript file if it exists
-        if transcript_path and transcript_path.exists():
-            transcript_remote_key = f"{UPLOAD_DIR}/transcript_{USER_ID}.json"
-            if not self.upload_file(transcript_path, transcript_remote_key):
-                upload_success = False
+        # Upload transcript files if they exist
+        if transcript_paths:
+            json_path, srt_path = transcript_paths if isinstance(transcript_paths, tuple) else (transcript_paths, None)
+            
+            # Upload JSON transcript
+            if json_path and Path(json_path).exists():
+                json_remote_key = f"{UPLOAD_DIR}/transcript_{USER_ID}.json"
+                if not self.upload_file(json_path, json_remote_key):
+                    upload_success = False
+            
+            # Upload SRT transcript
+            if srt_path and Path(srt_path).exists():
+                srt_remote_key = f"{UPLOAD_DIR}/subtitle_{USER_ID}.srt"
+                if not self.upload_file(srt_path, srt_remote_key):
+                    upload_success = False
         
         return upload_success
 
@@ -385,6 +395,38 @@ class WhisperTranscriber:
                 return False
         return True
     
+    def format_timestamp(self, seconds):
+        """
+        Convert seconds to SRT timestamp format (HH:MM:SS,mmm)
+        """
+        hours = int(seconds / 3600)
+        minutes = int((seconds % 3600) / 60)
+        seconds = seconds % 60
+        milliseconds = int((seconds - int(seconds)) * 1000)
+        return f"{hours:02d}:{minutes:02d}:{int(seconds):02d},{milliseconds:03d}"
+    
+    def convert_to_srt(self, result):
+        """
+        Convert Whisper result to SRT format
+        
+        Args:
+            result: Whisper transcription result
+            
+        Returns:
+            str: SRT formatted string
+        """
+        srt_content = ""
+        
+        for i, segment in enumerate(result.get("segments", []), 1):
+            start_time = self.format_timestamp(segment.get("start", 0))
+            end_time = self.format_timestamp(segment.get("end", 0))
+            text = segment.get("text", "").strip()
+            
+            srt_entry = f"{i}\n{start_time} --> {end_time}\n{text}\n\n"
+            srt_content += srt_entry
+            
+        return srt_content
+    
     def transcribe_audio(self, audio_path, output_dir):
         """
         Transcribe audio file using Whisper
@@ -411,9 +453,10 @@ class WhisperTranscriber:
             
             # Generate timestamp for filename
             timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-            transcript_path = output_dir / f"transcript_{timestamp}.json"
+            json_path = output_dir / f"transcript_{timestamp}.json"
+            srt_path = output_dir / f"transcript_{timestamp}.srt"
             
-            # Prepare transcript data
+            # Prepare transcript data (JSON)
             transcript_data = {
                 "meeting_id": MEETING_ID,
                 "take": TAKE,
@@ -435,13 +478,19 @@ class WhisperTranscriber:
                 })
             
             # Save transcript to JSON file
-            with open(transcript_path, 'w', encoding='utf-8') as f:
+            with open(json_path, 'w', encoding='utf-8') as f:
                 json.dump(transcript_data, f, indent=2, ensure_ascii=False)
+            
+            # Convert to SRT and save
+            srt_content = self.convert_to_srt(result)
+            with open(srt_path, 'w', encoding='utf-8') as f:
+                f.write(srt_content)
             
             print(f"✅ Transcript generated successfully!")
             print(f"📝 Language detected: {transcript_data['language']}")
             print(f"📊 Segments: {len(transcript_data['segments'])}")
-            print(f"📁 Transcript saved: {transcript_path}")
+            print(f"📁 JSON transcript saved: {json_path}")
+            print(f"📁 SRT subtitle saved: {srt_path}")
             
             # Show preview of transcription
             preview_text = transcript_data["full_text"][:200]
@@ -449,7 +498,8 @@ class WhisperTranscriber:
                 preview_text += "..."
             print(f"📖 Preview: {preview_text}")
             
-            return transcript_path
+            # Return both paths as a tuple - for backward compatibility, keep the primary one first
+            return json_path, srt_path
             
         except Exception as e:
             print(f"❌ Transcription failed: {e}")
@@ -509,7 +559,7 @@ class VideoPipeline:
         """Generate transcript from audio file"""
         if not audio_path or not audio_path.exists():
             print("⚠️  No audio file available for transcription")
-            return None
+            return None, None
         
         print(f"🎤 Starting audio transcription...")
         transcript_output_dir = os.path.join(OUTPUT_DIR, "transcripts")
@@ -559,12 +609,12 @@ class VideoPipeline:
                 return False
             
             # Step 5: Generate transcript (if audio available and not skipped)
-            transcript_path = None
+            transcript_paths = None
             if not skip_transcription and audio_path:
                 print(f"\n🎤 Step 5: Generating transcript")
-                transcript_path = self.transcribe_audio(audio_path)
+                transcript_paths = self.transcribe_audio(audio_path)
                 
-                if transcript_path:
+                if transcript_paths and transcript_paths[0]:
                     print("✅ Transcript generated successfully!")
                 else:
                     print("⚠️  Transcript generation failed, continuing without transcript")
@@ -575,7 +625,7 @@ class VideoPipeline:
             
             # Step 6: Upload processed files
             print(f"\n📤 Step 6: Uploading processed files")
-            if not self.r2_manager.upload_processed_files(video_path, audio_path, transcript_path):
+            if not self.r2_manager.upload_processed_files(video_path, audio_path, transcript_paths):
                 print("❌ Failed to upload some files!")
                 return False
             
@@ -583,7 +633,7 @@ class VideoPipeline:
             print(f"✅ Video file processed and uploaded")
             if audio_path:
                 print(f"✅ Audio file processed and uploaded")
-            if transcript_path:
+            if transcript_paths:
                 print(f"✅ Transcript generated and uploaded")
             
             return True
