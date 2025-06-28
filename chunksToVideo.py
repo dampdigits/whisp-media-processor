@@ -128,7 +128,7 @@ class VideoProcessor:
         )
         
         return success
-    
+
     def process_chunks(self):
         """Main processing function"""
         print("🔍 Scanning for chunk sequences...")
@@ -169,16 +169,33 @@ class VideoProcessor:
             # Step 3: Generate output filenames with timestamp
             timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
             final_video_path = self.video_output_dir / f"output_{timestamp}.webm"
-            final_audio_path = self.audio_output_dir / f"audio_{timestamp}.webm"
+            final_audio_path = self.audio_output_dir / f"audio_{timestamp}.wav"  # Changed to .wav
             
             # Step 4: Save audio file to AUD_DIR if available
             saved_audio_path = None
             if audio_concat_path and audio_concat_path.exists():
-                print(f"\n🎵 Saving complete audio file to: {final_audio_path}")
+                print(f"\n🎵 Converting audio to WAV and saving to: {final_audio_path}")
                 try:
-                    shutil.copy2(audio_concat_path, final_audio_path)
-                    saved_audio_path = final_audio_path
-                    print(f"✅ Audio file saved successfully!")
+                    # Convert WebM to WAV using FFmpeg
+                    command = [
+                        "ffmpeg",
+                        "-y",
+                        "-i", str(audio_concat_path),
+                        "-acodec", "pcm_s16le",  # Standard WAV format
+                        "-ar", "44100",          # Sample rate
+                        str(final_audio_path)
+                    ]
+                    
+                    success, output = self.run_ffmpeg(
+                        command,
+                        "Converting audio to WAV format"
+                    )
+                    
+                    if success:
+                        saved_audio_path = final_audio_path
+                        print(f"✅ Audio file converted and saved successfully!")
+                    else:
+                        print(f"❌ Failed to convert audio to WAV format")
                 except Exception as e:
                     print(f"❌ Failed to save audio file: {e}")
             

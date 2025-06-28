@@ -129,7 +129,9 @@ class CloudflareR2Manager:
         
         # Upload audio file if it exists
         if audio_path and audio_path.exists():
-            audio_remote_key = f"{UPLOAD_DIR}/final_audio_{USER_ID}.webm"
+            # Get the file extension from the source file
+            audio_ext = audio_path.suffix  # This will include the dot (.wav)
+            audio_remote_key = f"{UPLOAD_DIR}/final_audio_{USER_ID}{audio_ext}"
             if not self.upload_file(audio_path, audio_remote_key):
                 upload_success = False
         
@@ -304,30 +306,47 @@ class VideoProcessor:
             # Step 3: Generate output filenames with timestamp
             timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
             final_video_path = self.video_output_dir / f"output_{timestamp}.webm"
-            final_audio_path = self.audio_output_dir / f"audio_{timestamp}.webm"
+            final_audio_path = self.audio_output_dir / f"audio_{timestamp}.wav"  # Use WAV format
             
-            # Step 4: Save audio file to AUD_DIR if available
+            # Step 4: Create final video file first
             saved_audio_path = None
-            if audio_concat_path and audio_concat_path.exists():
-                print(f"\n🎵 Saving complete audio file to: {final_audio_path}")
-                try:
-                    shutil.copy2(audio_concat_path, final_audio_path)
-                    saved_audio_path = final_audio_path
-                    print(f"✅ Audio file saved successfully!")
-                except Exception as e:
-                    print(f"❌ Failed to save audio file: {e}")
-            
-            # Step 5: Create final video file
             if audio_concat_path and audio_concat_path.exists():
                 print(f"\n🎞️  Muxing video and audio into final output: {final_video_path}")
                 
                 if self.mux_video_audio(video_concat_path, audio_concat_path, final_video_path):
                     print(f"✅ Success! Final video with audio saved at:")
                     print(f"   {final_video_path}")
+                    
+                    # Step 5: NOW convert and save audio as WAV
+                    print(f"\n🎵 Converting audio to WAV format: {final_audio_path}")
+                    try:
+                        # Convert WebM to WAV using FFmpeg
+                        command = [
+                            "ffmpeg",
+                            "-y",
+                            "-i", str(audio_concat_path),
+                            "-acodec", "pcm_s16le",  # Standard WAV format
+                            "-ar", "44100",          # Sample rate
+                            str(final_audio_path)
+                        ]
+                        
+                        success, output = self.run_ffmpeg(
+                            command,
+                            "Converting audio to WAV format"
+                        )
+                        
+                        if success:
+                            saved_audio_path = final_audio_path
+                            print(f"✅ Audio file converted and saved as WAV successfully!")
+                        else:
+                            print(f"❌ Failed to convert audio to WAV format")
+                    except Exception as e:
+                        print(f"❌ Failed to save audio as WAV: {e}")
+                    
                     return final_video_path, saved_audio_path
                 else:
                     print("❌ Failed to mux video and audio!")
-                    return None, saved_audio_path
+                    return None, None
             else:
                 # Video only output
                 print(f"\n🎞️  Creating video-only output: {final_video_path}")
@@ -336,10 +355,10 @@ class VideoProcessor:
                     shutil.copy2(video_concat_path, final_video_path)
                     print(f"✅ Success! Video-only file saved at:")
                     print(f"   {final_video_path}")
-                    return final_video_path, saved_audio_path
+                    return final_video_path, None
                 except Exception as e:
                     print(f"❌ Failed to copy video file: {e}")
-                    return None, saved_audio_path
+                    return None, None
 
 class WhisperTranscriber:
     def __init__(self, model_size="base"):
