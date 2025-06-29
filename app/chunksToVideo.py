@@ -7,15 +7,18 @@ from pathlib import Path
 from driver import LOCAL_DIR, OUTPUT_DIR
 
 class VideoProcessor:
-    def __init__(self, video_chunks_dir, audio_chunks_dir, video_output_dir, audio_output_dir):
+    def __init__(self, video_chunks_dir, audio_chunks_dir, video_output_dir, audio_output_dir, transcript_output_dir=None):
         self.video_chunks_dir = Path(video_chunks_dir)
         self.audio_chunks_dir = Path(audio_chunks_dir)
         self.video_output_dir = Path(video_output_dir)
         self.audio_output_dir = Path(audio_output_dir)
+        self.transcript_output_dir = Path(transcript_output_dir) if transcript_output_dir else None
         
         # Create output directories
         self.video_output_dir.mkdir(parents=True, exist_ok=True)
         self.audio_output_dir.mkdir(parents=True, exist_ok=True)
+        if self.transcript_output_dir:
+            self.transcript_output_dir.mkdir(parents=True, exist_ok=True)
         
     def run_ffmpeg(self, command, description="FFmpeg operation"):
         """Execute FFmpeg command with proper error handling"""
@@ -108,28 +111,43 @@ class VideoProcessor:
                 temp_concat_path.unlink()
             return False
     
-    def mux_video_audio(self, video_path, audio_path, output_path):
-        """Mux video and audio streams together"""
-        command = [
-            "ffmpeg",
-            "-y",
-            "-i", str(video_path),
-            "-i", str(audio_path),
-            "-c:v", "copy",
-            "-c:a", "copy",
-            "-shortest",  # End when the shorter stream ends
-            "-avoid_negative_ts", "make_zero",
-            str(output_path)
-        ]
+    def mux_video_audio_with_captions(self, video_path, audio_path, srt_path, output_path):
+        """Mux video and audio streams together with soft captions into MP4"""
+        # Build command based on available inputs
+        command = ["ffmpeg", "-y"]
+        
+        # Add video input
+        command.extend(["-i", str(video_path)])
+        
+        # Add audio input if available
+        if audio_path:
+            command.extend(["-i", str(audio_path)])
+        
+        # Video codec - use h264 for better compatibility
+        command.extend(["-c:v", "libx264", "-preset", "medium", "-crf", "23"])
+        
+        # Audio codec if audio is available
+        if audio_path:
+            command.extend(["-c:a", "aac", "-b:a", "128k"])
+        
+        # Add subtitle if available
+        if srt_path and srt_path.exists():
+            command.extend(["-i", str(srt_path), "-c:s", "mov_text", "-metadata:s:s:0", "language=eng"])
+        
+        # Other options
+        command.extend(["-shortest", "-avoid_negative_ts", "make_zero"])
+        
+        # Output file
+        command.append(str(output_path))
         
         success, output = self.run_ffmpeg(
             command,
-            "Muxing video and audio streams"
+            "Creating MP4 with video, audio, and soft captions"
         )
         
         return success
 
-    def process_chunks(self):
+    def process_chunks(self, srt_path=None):
         """Main processing function"""
         print("🔍 Scanning for chunk sequences...")
         
@@ -168,13 +186,13 @@ class VideoProcessor:
             
             # Step 3: Generate output filenames with timestamp
             timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-            final_video_path = self.video_output_dir / f"output_{timestamp}.webm"
-            final_audio_path = self.audio_output_dir / f"audio_{timestamp}.wav"  # Changed to .wav
+            final_video_path = self.video_output_dir / f"output_{timestamp}.mp4"  # Changed to MP4
+            final_audio_path = self.audio_output_dir / f"audio_{timestamp}.wav"
             
-            # Step 4: Save audio file to AUD_DIR if available
+            # Step 4: Convert and save audio as WAV if available
             saved_audio_path = None
             if audio_concat_path and audio_concat_path.exists():
-                print(f"\n🎵 Converting audio to WAV and saving to: {final_audio_path}")
+                print(f"\n🎵 Converting audio to WAV format: {final_audio_path}")
                 try:
                     # Convert WebM to WAV using FFmpeg
                     command = [
@@ -193,35 +211,24 @@ class VideoProcessor:
                     
                     if success:
                         saved_audio_path = final_audio_path
-                        print(f"✅ Audio file converted and saved successfully!")
+                        print(f"✅ Audio file converted and saved as WAV successfully!")
                     else:
                         print(f"❌ Failed to convert audio to WAV format")
                 except Exception as e:
-                    print(f"❌ Failed to save audio file: {e}")
+                    print(f"❌ Failed to save audio as WAV: {e}")
             
-            # Step 5: Create final video file
-            if audio_concat_path and audio_concat_path.exists():
-                print(f"\n🎞️  Muxing video and audio into final output: {final_video_path}")
-                
-                if self.mux_video_audio(video_concat_path, audio_concat_path, final_video_path):
-                    print(f"✅ Success! Final video with audio saved at:")
-                    print(f"   {final_video_path}")
-                    return final_video_path, saved_audio_path
-                else:
-                    print("❌ Failed to mux video and audio!")
-                    return None, saved_audio_path
+            # Step 5: Create final MP4 video with soft captions
+            print(f"\n🎞️  Creating final MP4 with captions: {final_video_path}")
+            
+            if self.mux_video_audio_with_captions(video_concat_path, audio_concat_path, srt_path, final_video_path):
+                print(f"✅ Success! Final MP4 video saved at:")
+                print(f"   {final_video_path}")
+                if srt_path and srt_path.exists():
+                    print(f"   With embedded soft captions from: {srt_path}")
+                return final_video_path, saved_audio_path
             else:
-                # Video only output
-                print(f"\n🎞️  Creating video-only output: {final_video_path}")
-                
-                try:
-                    shutil.copy2(video_concat_path, final_video_path)
-                    print(f"✅ Success! Video-only file saved at:")
-                    print(f"   {final_video_path}")
-                    return final_video_path, saved_audio_path
-                except Exception as e:
-                    print(f"❌ Failed to copy video file: {e}")
-                    return None, saved_audio_path
+                print("❌ Failed to create final MP4 video!")
+                return None, saved_audio_path
 
 def main():
     start_time = datetime.now() # Start timing
@@ -231,6 +238,7 @@ def main():
     audio_chunks_dir = os.path.join(LOCAL_DIR, "audio")
     video_output_dir = os.path.join(OUTPUT_DIR, "video")
     audio_output_dir = os.path.join(OUTPUT_DIR, "audio")
+    transcript_output_dir = os.path.join(OUTPUT_DIR, "transcripts")
     
     # Check if FFmpeg is available
     try:
@@ -253,10 +261,20 @@ def main():
     print(f"📂 Audio chunks directory: {audio_chunks_dir}")
     print(f"📂 Video output directory: {video_output_dir}")
     print(f"📂 Audio output directory: {audio_output_dir}")
+    print(f"📂 Transcript output directory: {transcript_output_dir}")
+    
+    # No SRT file available when running standalone
+    srt_path = None
     
     # Process chunks
-    processor = VideoProcessor(video_chunks_dir, audio_chunks_dir, video_output_dir, audio_output_dir)
-    video_result, audio_result = processor.process_chunks()
+    processor = VideoProcessor(
+        video_chunks_dir, 
+        audio_chunks_dir, 
+        video_output_dir, 
+        audio_output_dir,
+        transcript_output_dir
+    )
+    video_result, audio_result = processor.process_chunks(srt_path)
     
     if video_result:
         print(f"\n🎉 Processing completed successfully!")

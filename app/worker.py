@@ -110,7 +110,7 @@ class CloudflareR2Manager:
         
         # Upload video file
         if video_path and video_path.exists():
-            video_remote_key = f"{UPLOAD_DIR}/final_video_{USER_ID}.webm"
+            video_remote_key = f"{UPLOAD_DIR}/final_video_{USER_ID}.mp4"  # Changed to .mp4
             if not self.upload_file(video_path, video_remote_key):
                 upload_success = False
         
@@ -127,10 +127,10 @@ class CloudflareR2Manager:
             json_path, srt_path = transcript_paths if isinstance(transcript_paths, tuple) else (transcript_paths, None)
             
             # Upload JSON transcript
-            if json_path and Path(json_path).exists():
-                json_remote_key = f"{UPLOAD_DIR}/transcript_{USER_ID}.json"
-                if not self.upload_file(json_path, json_remote_key):
-                    upload_success = False
+            # if json_path and Path(json_path).exists():
+            #     json_remote_key = f"{UPLOAD_DIR}/transcript_{USER_ID}.json"
+            #     if not self.upload_file(json_path, json_remote_key):
+            #         upload_success = False
             
             # Upload SRT transcript
             if srt_path and Path(srt_path).exists():
@@ -141,15 +141,18 @@ class CloudflareR2Manager:
         return upload_success
 
 class VideoProcessor:
-    def __init__(self, video_chunks_dir, audio_chunks_dir, video_output_dir, audio_output_dir):
+    def __init__(self, video_chunks_dir, audio_chunks_dir, video_output_dir, audio_output_dir, transcript_output_dir=None):
         self.video_chunks_dir = Path(video_chunks_dir)
         self.audio_chunks_dir = Path(audio_chunks_dir)
         self.video_output_dir = Path(video_output_dir)
         self.audio_output_dir = Path(audio_output_dir)
+        self.transcript_output_dir = Path(transcript_output_dir) if transcript_output_dir else None
         
         # Create output directories
         self.video_output_dir.mkdir(parents=True, exist_ok=True)
         self.audio_output_dir.mkdir(parents=True, exist_ok=True)
+        if self.transcript_output_dir:
+            self.transcript_output_dir.mkdir(parents=True, exist_ok=True)
         
     def run_ffmpeg(self, command, description="FFmpeg operation"):
         """Execute FFmpeg command with proper error handling"""
@@ -263,6 +266,47 @@ class VideoProcessor:
         
         return success
     
+    def mux_video_audio_with_captions(self, video_path, audio_path, srt_path, output_path):
+        """Mux video and audio streams together with soft captions into MP4"""
+        # First add all input files
+        command = ["ffmpeg", "-y"]
+        
+        # Add video input
+        command.extend(["-i", str(video_path)])
+        
+        # Add audio input if available
+        if audio_path:
+            command.extend(["-i", str(audio_path)])
+        
+        # Add subtitle input if available
+        if srt_path and Path(srt_path).exists():
+            command.extend(["-i", str(srt_path)])
+        
+        # Now add output options
+        # Video codec - use h264 for better compatibility
+        command.extend(["-c:v", "libx264", "-preset", "medium", "-crf", "23"])
+        
+        # Audio codec if audio is available
+        if audio_path:
+            command.extend(["-c:a", "aac", "-b:a", "128k"])
+        
+        # Subtitle codec if available
+        if srt_path and Path(srt_path).exists():
+            command.extend(["-c:s", "mov_text", "-metadata:s:s:0", "language=eng"])
+        
+        # Other options
+        command.extend(["-shortest", "-avoid_negative_ts", "make_zero"])
+        
+        # Output file
+        command.append(str(output_path))
+        
+        success, output = self.run_ffmpeg(
+            command,
+            "Creating MP4 with video, audio, and soft captions"
+        )
+        
+        return success
+    
     def process_chunks(self):
         """Main processing function"""
         print("🔍 Scanning for chunk sequences...")
@@ -302,7 +346,7 @@ class VideoProcessor:
             
             # Step 3: Generate output filenames with timestamp
             timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-            final_video_path = self.video_output_dir / f"output_{timestamp}.webm"
+            final_video_path = self.video_output_dir / f"output_{timestamp}.mp4"  # Changed to MP4
             final_audio_path = self.audio_output_dir / f"audio_{timestamp}.wav"  # Use WAV format
             
             # Step 4: Create final video file first
@@ -310,53 +354,76 @@ class VideoProcessor:
             if audio_concat_path and audio_concat_path.exists():
                 print(f"\n🎞️  Muxing video and audio into final output: {final_video_path}")
                 
-                if self.mux_video_audio(video_concat_path, audio_concat_path, final_video_path):
+                # Convert WebM to WAV for audio file
+                print(f"\n🎵 Converting audio to WAV format: {final_audio_path}")
+                try:
+                    # Convert WebM to WAV using FFmpeg
+                    command = [
+                        "ffmpeg",
+                        "-y",
+                        "-i", str(audio_concat_path),
+                        "-acodec", "pcm_s16le",  # Standard WAV format
+                        "-ar", "44100",          # Sample rate
+                        str(final_audio_path)
+                    ]
+                    
+                    success, output = self.run_ffmpeg(
+                        command,
+                        "Converting audio to WAV format"
+                    )
+                    
+                    if success:
+                        saved_audio_path = final_audio_path
+                        print(f"✅ Audio file converted and saved as WAV successfully!")
+                    else:
+                        print(f"❌ Failed to convert audio to WAV format")
+                except Exception as e:
+                    print(f"❌ Failed to save audio as WAV: {e}")
+                
+                # For video, create MP4 directly (without soft captions here)
+                command = [
+                    "ffmpeg",
+                    "-y",
+                    "-i", str(video_concat_path),
+                    "-i", str(audio_concat_path),
+                    "-c:v", "libx264", "-preset", "medium", "-crf", "23",
+                    "-c:a", "aac", "-b:a", "128k",
+                    "-shortest",
+                    "-avoid_negative_ts", "make_zero",
+                    str(final_video_path)
+                ]
+                
+                success, _ = self.run_ffmpeg(command, "Creating MP4 video with audio")
+                
+                if success:
                     print(f"✅ Success! Final video with audio saved at:")
                     print(f"   {final_video_path}")
-                    
-                    # Step 5: NOW convert and save audio as WAV
-                    print(f"\n🎵 Converting audio to WAV format: {final_audio_path}")
-                    try:
-                        # Convert WebM to WAV using FFmpeg
-                        command = [
-                            "ffmpeg",
-                            "-y",
-                            "-i", str(audio_concat_path),
-                            "-acodec", "pcm_s16le",  # Standard WAV format
-                            "-ar", "44100",          # Sample rate
-                            str(final_audio_path)
-                        ]
-                        
-                        success, output = self.run_ffmpeg(
-                            command,
-                            "Converting audio to WAV format"
-                        )
-                        
-                        if success:
-                            saved_audio_path = final_audio_path
-                            print(f"✅ Audio file converted and saved as WAV successfully!")
-                        else:
-                            print(f"❌ Failed to convert audio to WAV format")
-                    except Exception as e:
-                        print(f"❌ Failed to save audio as WAV: {e}")
-                    
                     return final_video_path, saved_audio_path
                 else:
                     print("❌ Failed to mux video and audio!")
                     return None, None
             else:
-                # Video only output
-                print(f"\n🎞️  Creating video-only output: {final_video_path}")
+                # Video only output as MP4
+                print(f"\n🎞️  Creating video-only MP4 output: {final_video_path}")
                 
-                try:
-                    shutil.copy2(video_concat_path, final_video_path)
-                    print(f"✅ Success! Video-only file saved at:")
+                command = [
+                    "ffmpeg",
+                    "-y",
+                    "-i", str(video_concat_path),
+                    "-c:v", "libx264", "-preset", "medium", "-crf", "23",
+                    str(final_video_path)
+                ]
+                
+                success, _ = self.run_ffmpeg(command, "Creating MP4 video (no audio)")
+                
+                if success:
+                    print(f"✅ Success! Video-only MP4 file saved at:")
                     print(f"   {final_video_path}")
                     return final_video_path, None
-                except Exception as e:
-                    print(f"❌ Failed to copy video file: {e}")
+                else:
+                    print(f"❌ Failed to create MP4 video file")
                     return None, None
-
+                
 class WhisperTranscriber:
     def __init__(self, model_size="base"):
         """
@@ -587,38 +654,129 @@ class VideoPipeline:
             if not self.r2_manager.download_chunks():
                 return False
             
-            # Step 4: Process chunks
-            print(f"\n🎬 Step 4: Processing chunks")
-            video_path, audio_path = self.process_chunks()
+            # Step 4: Process video/audio chunks into intermediate files
+            print(f"\n🎬 Step 4: Processing chunks into intermediate files")
+            video_chunks_dir = os.path.join(LOCAL_DIR, "video")
+            audio_chunks_dir = os.path.join(LOCAL_DIR, "audio")
+            video_output_dir = os.path.join(OUTPUT_DIR, "video")
+            audio_output_dir = os.path.join(OUTPUT_DIR, "audio")
+            transcript_output_dir = os.path.join(OUTPUT_DIR, "transcripts")
             
-            if not video_path:
-                print("❌ Failed to process chunks!")
+            processor = VideoProcessor(
+                video_chunks_dir, 
+                audio_chunks_dir, 
+                video_output_dir, 
+                audio_output_dir,
+                transcript_output_dir
+            )
+            
+            # First just concatenate to get our intermediate files
+            video_chunks, audio_chunks = processor.find_chunk_sequences()
+            
+            if not video_chunks:
+                print("❌ No video chunks found!")
                 return False
             
-            # Step 5: Generate transcript (if audio available and not skipped)
-            transcript_paths = None
-            if not skip_transcription and audio_path:
-                print(f"\n🎤 Step 5: Generating transcript")
-                transcript_paths = self.transcribe_audio(audio_path)
+            # Create temporary directory for processing
+            with tempfile.TemporaryDirectory() as temp_dir:
+                temp_dir = Path(temp_dir)
+                video_concat_path = temp_dir / "video_concatenated.webm"
+                audio_concat_path = None
                 
-                if transcript_paths and transcript_paths[0]:
-                    print("✅ Transcript generated successfully!")
+                # Concatenate video chunks
+                if not processor.concatenate_raw_chunks(video_chunks, video_concat_path, "video"):
+                    print("❌ Failed to process video chunks!")
+                    return False
+                
+                # Concatenate audio chunks if available
+                if audio_chunks:
+                    audio_concat_path = temp_dir / "audio_concatenated.webm"
+                    if not processor.concatenate_raw_chunks(audio_chunks, audio_concat_path, "audio"):
+                        print("⚠️ Failed to process audio chunks, continuing with video only")
+                        audio_concat_path = None
+                
+                # Convert audio to WAV for transcription if needed
+                audio_wav_path = None
+                if audio_concat_path and not skip_transcription:
+                    audio_wav_path = temp_dir / "audio_for_transcription.wav"
+                    # Convert WebM to WAV using FFmpeg
+                    command = [
+                        "ffmpeg",
+                        "-y",
+                        "-i", str(audio_concat_path),
+                        "-acodec", "pcm_s16le",
+                        "-ar", "44100",
+                        str(audio_wav_path)
+                    ]
+                    
+                    success, _ = processor.run_ffmpeg(command, "Converting audio to WAV for transcription")
+                    if not success:
+                        print("⚠️ Failed to convert audio for transcription, skipping transcription")
+                        audio_wav_path = None
+                
+                # Step 5: Generate transcript
+                transcript_paths = None
+                srt_path = None
+                if not skip_transcription and audio_wav_path and audio_wav_path.exists():
+                    print(f"\n🎤 Step 5: Generating transcript")
+                    transcript_paths = self.transcriber.transcribe_audio(audio_wav_path, transcript_output_dir)
+                    
+                    if transcript_paths and len(transcript_paths) > 1:
+                        _, srt_path = transcript_paths  # Extract SRT path
+                        print(f"✅ SRT transcript generated: {srt_path}")
+                    else:
+                        print("⚠️ SRT transcript generation failed or not available")
                 else:
-                    print("⚠️  Transcript generation failed, continuing without transcript")
-            elif skip_transcription:
-                print(f"\n⏭️  Step 5: Skipping transcription (--no-transcript flag)")
-            else:
-                print(f"\n⏭️  Step 5: Skipping transcription (no audio file)")
+                    print(f"\n⏭️ Step 5: Skipping transcription (no audio or skipped)")
+                
+                # Step 6: Generate final outputs
+                print(f"\n🎞️ Step 6: Creating final MP4 with soft captions")
+                
+                # Generate output filenames with timestamp
+                timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+                final_video_path = Path(video_output_dir) / f"output_{timestamp}.mp4"
+                final_audio_path = Path(audio_output_dir) / f"audio_{timestamp}.wav"
+                
+                # Save audio as WAV if available
+                saved_audio_path = None
+                if audio_concat_path and audio_concat_path.exists():
+                    command = [
+                        "ffmpeg",
+                        "-y",
+                        "-i", str(audio_concat_path),
+                        "-acodec", "pcm_s16le",
+                        "-ar", "44100",
+                        str(final_audio_path)
+                    ]
+                    
+                    success, _ = processor.run_ffmpeg(command, "Saving final audio as WAV")
+                    if success:
+                        saved_audio_path = final_audio_path
+                
+                # Create final MP4 with captions
+                if processor.mux_video_audio_with_captions(
+                    video_concat_path, 
+                    audio_concat_path, 
+                    srt_path, 
+                    final_video_path
+                ):
+                    print(f"✅ Final MP4 video created successfully: {final_video_path}")
+                    video_path = final_video_path
+                else:
+                    print(f"❌ Failed to create final MP4 video")
+                    return False
             
-            # Step 6: Upload processed files
-            print(f"\n📤 Step 6: Uploading processed files")
-            if not self.r2_manager.upload_processed_files(video_path, audio_path, transcript_paths):
+            # Step 7: Upload processed files
+            print(f"\n📤 Step 7: Uploading processed files")
+            
+            # Update the remote keys to use mp4 extension
+            if not self.r2_manager.upload_processed_files(video_path, saved_audio_path, transcript_paths):
                 print("❌ Failed to upload some files!")
                 return False
             
             print(f"\n🎉 Pipeline completed successfully!")
-            print(f"✅ Video file processed and uploaded")
-            if audio_path:
+            print(f"✅ MP4 video file processed and uploaded")
+            if saved_audio_path:
                 print(f"✅ Audio file processed and uploaded")
             if transcript_paths:
                 print(f"✅ Transcript generated and uploaded")
@@ -630,14 +788,14 @@ class VideoPipeline:
             return False
         
         finally:
-            # Step 7: Cleanup (optional)
+            # Step 8: Cleanup (optional)
             if cleanup:
-                print(f"\n🧹 Step 7: Cleaning up local files")
+                print(f"\n🧹 Step 8: Cleaning up local files")
                 self.cleanup_local_files()
             
             end_time = datetime.now()
             duration = end_time - start_time
-            print(f"\n⏱️  Total pipeline time: {duration}")
+            print(f"\n⏱️ Total pipeline time: {duration}")
             print("=" * 60)
 
 def main():
