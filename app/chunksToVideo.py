@@ -4,7 +4,6 @@ import tempfile
 import shutil
 from datetime import datetime
 from pathlib import Path
-from driver import LOCAL_DIR, OUTPUT_DIR
 
 class VideoProcessor:
     def __init__(self, video_chunks_dir, audio_chunks_dir, video_output_dir, audio_output_dir, transcript_output_dir=None):
@@ -231,14 +230,25 @@ class VideoProcessor:
                 return None, saved_audio_path
 
 def main():
+    """Standalone main function for testing VideoProcessor"""
     start_time = datetime.now() # Start timing
 
-    # Configuration - Updated paths
-    video_chunks_dir = os.path.join(LOCAL_DIR, "video")
-    audio_chunks_dir = os.path.join(LOCAL_DIR, "audio")
-    video_output_dir = os.path.join(OUTPUT_DIR, "video")
-    audio_output_dir = os.path.join(OUTPUT_DIR, "audio")
-    transcript_output_dir = os.path.join(OUTPUT_DIR, "transcripts")
+    # Default configuration for standalone usage
+    # These would normally come from driver configuration
+    base_dir = "../chunks/test_meeting/1/test_user"
+    output_base_dir = "../recordings/test_meeting/1/test_user"
+    
+    video_chunks_dir = os.path.join(base_dir, "video")
+    audio_chunks_dir = os.path.join(base_dir, "audio")
+    video_output_dir = os.path.join(output_base_dir, "video")
+    audio_output_dir = os.path.join(output_base_dir, "audio")
+    transcript_output_dir = os.path.join(output_base_dir, "transcripts")
+    
+    print("🎥 VideoProcessor Standalone Mode")
+    print("=" * 40)
+    print("⚠️  Note: This is standalone mode with default paths.")
+    print("   For production use, run through the Flask API.")
+    print("=" * 40)
     
     # Check if FFmpeg is available
     try:
@@ -251,6 +261,7 @@ def main():
     # Check if input directories exist
     if not os.path.exists(video_chunks_dir):
         print(f"❌ Video chunks directory not found: {video_chunks_dir}")
+        print("   Please ensure chunks are available or run through the main pipeline.")
         return
     
     if not os.path.exists(audio_chunks_dir):

@@ -20,13 +20,18 @@ import tempfile
 import shutil
 import json
 import whisper
-from driver import MEETING_ID, TAKE, USER_ID, PREFIX, DIR, REMOTE_DIR, LOCAL_DIR, OUTPUT_DIR, UPLOAD_DIR
 
 
 class CloudflareR2Manager:
-    def __init__(self):
+    def __init__(self, remote_dir, local_dir, upload_dir, user_id):
         # Load environment variables
         load_dotenv()
+        
+        # Store configuration
+        self.remote_dir = remote_dir
+        self.local_dir = local_dir
+        self.upload_dir = upload_dir
+        self.user_id = user_id
         
         # Get credentials from environment variables
         self.ACCESS_KEY = os.getenv('S3_ACCESS_KEY_ID')
@@ -51,11 +56,12 @@ class CloudflareR2Manager:
     def download_chunks(self):
         """Download chunks from R2 storage"""
         print(f"🌐 Downloading chunks from R2...")
-        print(f"📂 Remote directory: {REMOTE_DIR}")
-        print(f"📂 Local directory: {LOCAL_DIR}")
+        print(f"📂 Remote directory: {self.remote_dir}")
+        print(f"📂 Local directory: {self.local_dir}")
         
         try:
-            response = self.s3.list_objects_v2(Bucket=self.BUCKET_NAME, Prefix=REMOTE_DIR)
+            response = self.s3.list_objects_v2(Bucket=self.BUCKET_NAME, Prefix=self.remote_dir)
+            print(response)
             
             if 'Contents' not in response:
                 print("❌ No chunks found in remote directory!")
@@ -71,7 +77,7 @@ class CloudflareR2Manager:
                 else:
                     DOWNLOAD_FOLDER = "/video"
                 
-                DOWNLOAD_DIR = LOCAL_DIR + DOWNLOAD_FOLDER
+                DOWNLOAD_DIR = self.local_dir + DOWNLOAD_FOLDER
                 
                 # Create directory if it doesn't exist
                 os.makedirs(DOWNLOAD_DIR, exist_ok=True)
@@ -104,13 +110,13 @@ class CloudflareR2Manager:
     def upload_processed_files(self, video_path, audio_path=None, transcript_paths=None):
         """Upload processed video, audio, and transcript files"""
         print(f"🌐 Uploading processed files to R2...")
-        print(f"📂 Upload directory: {UPLOAD_DIR}")
+        print(f"📂 Upload directory: {self.upload_dir}")
         
         upload_success = True
         
         # Upload video file
         if video_path and video_path.exists():
-            video_remote_key = f"{UPLOAD_DIR}/final_video_{USER_ID}.mp4"  # Changed to .mp4
+            video_remote_key = f"{self.upload_dir}/final_video_{self.user_id}.mp4"  # Changed to .mp4
             if not self.upload_file(video_path, video_remote_key):
                 upload_success = False
         
@@ -118,7 +124,7 @@ class CloudflareR2Manager:
         if audio_path and audio_path.exists():
             # Get the file extension from the source file
             audio_ext = audio_path.suffix  # This will include the dot (.wav)
-            audio_remote_key = f"{UPLOAD_DIR}/final_audio_{USER_ID}{audio_ext}"
+            audio_remote_key = f"{self.upload_dir}/final_audio_{self.user_id}{audio_ext}"
             if not self.upload_file(audio_path, audio_remote_key):
                 upload_success = False
         
@@ -128,13 +134,13 @@ class CloudflareR2Manager:
             
             # Upload JSON transcript
             # if json_path and Path(json_path).exists():
-            #     json_remote_key = f"{UPLOAD_DIR}/transcript_{USER_ID}.json"
+            #     json_remote_key = f"{self.upload_dir}/transcript_{self.user_id}.json"
             #     if not self.upload_file(json_path, json_remote_key):
             #         upload_success = False
             
             # Upload SRT transcript
             if srt_path and Path(srt_path).exists():
-                srt_remote_key = f"{UPLOAD_DIR}/subtitle_{USER_ID}.srt"
+                srt_remote_key = f"{self.upload_dir}/subtitle_{self.user_id}.srt"
                 if not self.upload_file(srt_path, srt_remote_key):
                     upload_success = False
         
@@ -481,13 +487,16 @@ class WhisperTranscriber:
             
         return srt_content
     
-    def transcribe_audio(self, audio_path, output_dir):
+    def transcribe_audio(self, audio_path, output_dir, meeting_id, take, user_id):
         """
         Transcribe audio file using Whisper
         
         Args:
             audio_path (Path): Path to audio file
             output_dir (Path): Directory to save transcript
+            meeting_id (str): Meeting ID for metadata
+            take (str): Take number for metadata
+            user_id (str): User ID for metadata
             
         Returns:
             Path: Path to generated transcript file, or None if failed
@@ -512,9 +521,9 @@ class WhisperTranscriber:
             
             # Prepare transcript data (JSON)
             transcript_data = {
-                "meeting_id": MEETING_ID,
-                "take": TAKE,
-                "user_id": USER_ID,
+                "meeting_id": meeting_id,
+                "take": take,
+                "user_id": user_id,
                 "timestamp": timestamp,
                 "model_used": self.model_size,
                 "language": result.get("language", "unknown"),
@@ -560,13 +569,21 @@ class WhisperTranscriber:
             return None
 
 class VideoPipeline:
-    def __init__(self, whisper_model="base"):
-        self.r2_manager = CloudflareR2Manager()
+    def __init__(self, meeting_id, take, user_id, remote_dir, local_dir, output_dir, upload_dir, whisper_model="base"):
+        self.meeting_id = meeting_id
+        self.take = take
+        self.user_id = user_id
+        self.remote_dir = remote_dir
+        self.local_dir = local_dir
+        self.output_dir = output_dir
+        self.upload_dir = upload_dir
+        
+        self.r2_manager = CloudflareR2Manager(remote_dir, local_dir, upload_dir, user_id)
         self.transcriber = WhisperTranscriber(whisper_model)
         print(f"🚀 Video Processing Pipeline Initialized")
-        print(f"📋 Meeting ID: {MEETING_ID}")
-        print(f"📋 Take: {TAKE}")
-        print(f"📋 User ID: {USER_ID}")
+        print(f"📋 Meeting ID: {self.meeting_id}")
+        print(f"📋 Take: {self.take}")
+        print(f"📋 User ID: {self.user_id}")
         print(f"🎤 Whisper Model: {whisper_model}")
     
     def setup_directories(self):
@@ -574,13 +591,13 @@ class VideoPipeline:
         print(f"📁 Setting up local directories...")
         
         directories = [
-            LOCAL_DIR,
-            os.path.join(LOCAL_DIR, "video"),
-            os.path.join(LOCAL_DIR, "audio"),
-            OUTPUT_DIR,
-            os.path.join(OUTPUT_DIR, "video"),
-            os.path.join(OUTPUT_DIR, "audio"),
-            os.path.join(OUTPUT_DIR, "transcripts")
+            self.local_dir,
+            os.path.join(self.local_dir, "video"),
+            os.path.join(self.local_dir, "audio"),
+            self.output_dir,
+            os.path.join(self.output_dir, "video"),
+            os.path.join(self.output_dir, "audio"),
+            os.path.join(self.output_dir, "transcripts")
         ]
         
         for directory in directories:
@@ -601,10 +618,10 @@ class VideoPipeline:
         """Process downloaded chunks into video/audio files"""
         print(f"🎬 Processing chunks into final video/audio...")
         
-        video_chunks_dir = os.path.join(LOCAL_DIR, "video")
-        audio_chunks_dir = os.path.join(LOCAL_DIR, "audio")
-        video_output_dir = os.path.join(OUTPUT_DIR, "video")
-        audio_output_dir = os.path.join(OUTPUT_DIR, "audio")
+        video_chunks_dir = os.path.join(self.local_dir, "video")
+        audio_chunks_dir = os.path.join(self.local_dir, "audio")
+        video_output_dir = os.path.join(self.output_dir, "video")
+        audio_output_dir = os.path.join(self.output_dir, "audio")
         
         processor = VideoProcessor(video_chunks_dir, audio_chunks_dir, video_output_dir, audio_output_dir)
         return processor.process_chunks()
@@ -616,20 +633,20 @@ class VideoPipeline:
             return None, None
         
         print(f"🎤 Starting audio transcription...")
-        transcript_output_dir = os.path.join(OUTPUT_DIR, "transcripts")
-        return self.transcriber.transcribe_audio(audio_path, transcript_output_dir)
+        transcript_output_dir = os.path.join(self.output_dir, "transcripts")
+        return self.transcriber.transcribe_audio(audio_path, transcript_output_dir, self.meeting_id, self.take, self.user_id)
     
     def cleanup_local_files(self):
         """Clean up temporary local files"""
         print(f"🧹 Cleaning up local files...")
         try:
-            if os.path.exists(LOCAL_DIR):
-                shutil.rmtree(LOCAL_DIR)
-                print(f"   Removed: {LOCAL_DIR}")
+            if os.path.exists(self.local_dir):
+                shutil.rmtree(self.local_dir)
+                print(f"   Removed: {self.local_dir}")
             
-            if os.path.exists(OUTPUT_DIR):
-                shutil.rmtree(OUTPUT_DIR)
-                print(f"   Removed: {OUTPUT_DIR}")
+            if os.path.exists(self.output_dir):
+                shutil.rmtree(self.output_dir)
+                print(f"   Removed: {self.output_dir}")
         except Exception as e:
             print(f"⚠️  Warning: Could not clean up some files: {e}")
     
@@ -656,11 +673,11 @@ class VideoPipeline:
             
             # Step 4: Process video/audio chunks into intermediate files
             print(f"\n🎬 Step 4: Processing chunks into intermediate files")
-            video_chunks_dir = os.path.join(LOCAL_DIR, "video")
-            audio_chunks_dir = os.path.join(LOCAL_DIR, "audio")
-            video_output_dir = os.path.join(OUTPUT_DIR, "video")
-            audio_output_dir = os.path.join(OUTPUT_DIR, "audio")
-            transcript_output_dir = os.path.join(OUTPUT_DIR, "transcripts")
+            video_chunks_dir = os.path.join(self.local_dir, "video")
+            audio_chunks_dir = os.path.join(self.local_dir, "audio")
+            video_output_dir = os.path.join(self.output_dir, "video")
+            audio_output_dir = os.path.join(self.output_dir, "audio")
+            transcript_output_dir = os.path.join(self.output_dir, "transcripts")
             
             processor = VideoProcessor(
                 video_chunks_dir, 
@@ -719,7 +736,7 @@ class VideoPipeline:
                 srt_path = None
                 if not skip_transcription and audio_wav_path and audio_wav_path.exists():
                     print(f"\n🎤 Step 5: Generating transcript")
-                    transcript_paths = self.transcriber.transcribe_audio(audio_wav_path, transcript_output_dir)
+                    transcript_paths = self.transcriber.transcribe_audio(audio_wav_path, transcript_output_dir, self.meeting_id, self.take, self.user_id)
                     
                     if transcript_paths and len(transcript_paths) > 1:
                         _, srt_path = transcript_paths  # Extract SRT path

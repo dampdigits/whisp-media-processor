@@ -50,7 +50,16 @@ def submit_data():
         # Start the video processing pipeline in a separate thread
         def run_pipeline():
             try:
-                pipeline = VideoPipeline(whisper_model=whisper_model)
+                pipeline = VideoPipeline(
+                    meeting_id=MEETING_ID,
+                    take=TAKE,
+                    user_id=USER_ID,
+                    remote_dir=config['REMOTE_DIR'],
+                    local_dir=config['LOCAL_DIR'],
+                    output_dir=config['OUTPUT_DIR'],
+                    upload_dir=config['UPLOAD_DIR'],
+                    whisper_model=whisper_model
+                )
                 success = pipeline.run(cleanup=cleanup, skip_transcription=skip_transcription)
                 
                 if success:
