@@ -1,6 +1,6 @@
-MEETING_ID = "abcdef"
-TAKE = "some-take-id"
-USER_ID = "some-user-id"
+MEETING_ID = "xwh5jP"
+TAKE = "6"
+USER_ID = "601f-18f1-4e6f-87dc"
 
 PREFIX = "recordings"
 DIR = '/'.join([MEETING_ID, TAKE, USER_ID])
