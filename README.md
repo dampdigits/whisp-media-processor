@@ -1,10 +1,10 @@
-# Hexafalls 2K25 🎬
+# Whisp Media Processor 🎬
 
 A modern, scalable video processing pipeline built with Flask that downloads, processes, transcribes, and uploads video chunks from Cloudflare R2 storage. Designed for real-time video conference recording processing with AI-powered transcription.
 
 ## 🚀 Overview
 
-Hexafalls 2K25 is a production-ready Flask web service that processes video and audio chunks into professional-quality media files with embedded transcriptions. The system features a RESTful API for seamless integration with video conferencing platforms and real-time processing capabilities.
+Whisp Media Processor is a production-ready Flask web service that processes video and audio chunks into professional-quality media files with embedded transcriptions. The system features a RESTful API for seamless integration with video conferencing platforms and real-time processing capabilities.
 
 ### Key Features
 
